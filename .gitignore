@@ -1,0 +1,6 @@
+venv/
+__pycache__/
+interim/
+processed/
+raw/
+experiments/

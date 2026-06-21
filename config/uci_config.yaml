@@ -1,0 +1,58 @@
+data:
+  channel_no: 8
+  users: 36
+  sampling_rate: 200  # Hz for UCI dataset
+
+feature_extraction:
+  segment_samples: 1000  # 5 seconds at 200Hz
+  overlap_samples: 200   # 1 second overlap
+  cache_features: true
+  apply_normalization: false  # Data is already normalized
+  use_enhanced_features: false  # Use only basic RSS features
+  
+  # Data augmentation configuration
+  apply_augmentation: true  # Enable data augmentation
+  n_augmentations: 3  # Maximum augmentations per sample (actual count will be class-dependent)
+  
+  # KFD configuration
+  use_kfd: true
+  kfd_components: 10  # Number of components to keep
+  kfd_kernel: 'poly'   # Kernel type: 'rbf', 'poly', 'linear', etc.
+  kfd_gamma: 0.1      # Kernel coefficient for 'rbf'
+
+processing:
+  n_workers: -1  # Use all CPU cores
+
+# MLP model configuration
+model:
+  model_type: "sklearn"  # Options: "sklearn" or "tensorflow"
+  hidden_layer_sizes: [100, 50]
+  activation: "relu"
+  solver: "adam"
+  alpha: 0.0001
+  learning_rate: "adaptive"
+  max_iter: 4000
+  random_state: 42
+  
+  # TensorFlow specific parameters
+  tf_batch_size: 32
+  tf_epochs: 500
+  tf_dropout_rate: 0.3
+  tf_l2_lambda: 0.001
+  tf_use_batch_norm: true
+  tf_optimizer: "adam"  # Options: "adam", "rmsprop", "adamw"
+  tf_learning_rate: 0.001
+  tf_use_lr_schedule: true
+  tf_early_stopping: true
+  tf_patience: 20
+  tf_class_weight_balanced: true
+  
+training:
+  test_size: 0.2
+  random_state: 42
+
+paths:
+  raw_data: "data/raw/UCI"
+  processed_data: "data/processed/UCI"
+  interim_data: "data/interim/UCI"
+  experiments: "experiments" 

@@ -182,8 +182,8 @@ class UCIDataLoader(BaseDataLoader):
         if missing_count > 0:
             print(f"Warning: {missing_count} missing values found")
             # Fill missing values with forward fill then backward fill
-            data = data.fillna(method='ffill')
-            data = data.fillna(method='bfill')
+            data = data.ffill()
+            data = data.bfill()
             
             # If still have missing values, fill with zeros
             remaining_missing = data.isnull().sum().sum()

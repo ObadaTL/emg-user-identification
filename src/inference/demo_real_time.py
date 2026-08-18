@@ -2,6 +2,12 @@
 """
 Demo of real-time EMG-based user identification.
 
+PROOF OF CONCEPT - not a maintained feature. See src/inference/README.md.
+Known limitation: this demo will error out with the default `use_kfd: true`
+config, since RealTimeEMGIdentifier does not apply KFD to extracted features.
+Pass `--no-kfd` to run_pipeline.py's config, or run this demo against a config
+with `use_kfd: false`, to avoid the feature-dimension mismatch.
+
 This script demonstrates how to:
 1. Load and preprocess data using the existing pipeline
 2. Train a model using the pipeline

@@ -8,9 +8,9 @@ feature_extraction:
   overlap_samples: 200   # 1 second overlap
   cache_features: true
   apply_normalization: false  # Data is already normalized
-  use_enhanced_features: false  # Use only basic RSS features
-  
-  # Data augmentation configuration
+
+  # Data augmentation configuration. Applied only to the training split,
+  # after the train/test split (inside model training), never before it.
   apply_augmentation: true  # Enable data augmentation
   n_augmentations: 3  # Maximum augmentations per sample (actual count will be class-dependent)
   

@@ -4,7 +4,7 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, Input
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 from tensorflow.keras.utils import to_categorical
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 from sklearn.preprocessing import StandardScaler
 import matplotlib.pyplot as plt
@@ -13,6 +13,9 @@ import time
 import os
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
+from src.features.kfd import KernelFisherDiscriminant
+from src.features.augmentation import augment_training_set
 
 class TFEMGUserIdentifier:
     """
@@ -50,7 +53,18 @@ class TFEMGUserIdentifier:
         self.early_stopping = config.get('model', {}).get('tf_early_stopping', True)
         self.patience = config.get('model', {}).get('tf_patience', 10)
         self.class_weight_balanced = config.get('model', {}).get('tf_class_weight_balanced', True)
-        
+
+        # KFD configuration - fit only on the training split inside train()
+        self.use_kfd = config.get('feature_extraction', {}).get('use_kfd', True)
+        self.kfd_kernel = config.get('feature_extraction', {}).get('kfd_kernel', 'poly')
+        self.kfd_components = config.get('feature_extraction', {}).get('kfd_components', 10)
+        self.kfd_gamma = config.get('feature_extraction', {}).get('kfd_gamma', None)
+
+        # Data augmentation configuration - applied to the training split only,
+        # after the train/test split (see train() below), never before it.
+        self.apply_augmentation = config.get('feature_extraction', {}).get('apply_augmentation', True)
+        self.n_augmentations = config.get('feature_extraction', {}).get('n_augmentations', 3)
+
         # Initialize scaler
         self.scaler = StandardScaler()
         
@@ -183,70 +197,105 @@ class TFEMGUserIdentifier:
                 
         return weights
 
-    def train(self, features: np.ndarray, test_size: float = 0.2) -> Dict[str, Any]:
+    def train(self, features: np.ndarray, class_labels: Optional[np.ndarray] = None,
+              test_size: float = 0.2) -> Dict[str, Any]:
         """
         Train the model on extracted features.
-        
+
+        Data flow, in order, to keep the test set completely untouched by
+        information from training rows: split raw features -> augment the
+        training split only -> fit KFD (if enabled) and the scaler on the
+        augmented training split only, transform the test split with them ->
+        train the network -> evaluate once on the untouched test split.
+
         Args:
             features: Feature matrix with shape (n_samples, n_features + 1)
                      Last column should contain the target labels (user IDs)
+            class_labels: Optional gesture-class labels aligned with `features`,
+                     split alongside it so evaluate_with_gestures() can reuse
+                     the exact same test split without re-deriving it.
             test_size: Proportion of data to use for testing
-            
+
         Returns:
             dict: Training results including accuracy, training time, etc.
         """
         print("\nTraining TensorFlow user identification model...")
-        
+
         # Extract features and target
         X = features[:, :-1]  # All columns except the last
-        y = features[:, -1]   # Last column is the target (user ID)
-        
-        # Scale features
-        X = self.scaler.fit_transform(X)
-        
-        # Convert user IDs to integers if necessary
-        y = y.astype(int)
-        
-        # Map original user IDs to consecutive integers starting from 0
-        # This is critical for TensorFlow's to_categorical function
+        y = features[:, -1].astype(int)   # Last column is the target (user ID)
+
+        # Map original user IDs to consecutive integers starting from 0.
+        # This is critical for TensorFlow's to_categorical function.
         unique_ids = np.unique(y)
         self.id_mapping = {original_id: idx for idx, original_id in enumerate(unique_ids)}
         self.reverse_mapping = {idx: original_id for original_id, idx in self.id_mapping.items()}
-        
-        # Transform the IDs to 0-indexed for keras
         y_transformed = np.array([self.id_mapping[id_val] for id_val in y])
-        
-        # Split data into training and testing sets
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y_transformed, test_size=test_size, random_state=self.random_state, stratify=y_transformed
-        )
-        print(f"Training on {len(X_train)} samples")
-        print(f"Testing on {len(X_test)} samples")
-        
-        # Determine number of classes (now they are 0-indexed)
+
         self.num_classes = len(unique_ids)
         print(f"Number of classes (unique user IDs): {self.num_classes}")
-        
+
+        # Split data into training and testing sets BEFORE any augmentation
+        # or KFD/scaler fitting, so the test set never influences either.
+        if class_labels is not None:
+            X_train, X_test, y_train, y_test, class_labels_train, class_labels_test = train_test_split(
+                X, y_transformed, class_labels, test_size=test_size,
+                random_state=self.random_state, stratify=y_transformed
+            )
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y_transformed, test_size=test_size, random_state=self.random_state, stratify=y_transformed
+            )
+            class_labels_train = class_labels_test = None
+
+        print(f"Training on {len(X_train)} samples (before augmentation)")
+        print(f"Testing on {len(X_test)} samples")
+
+        # Augment the training split only.
+        if self.apply_augmentation:
+            X_train, y_train, class_labels_train = augment_training_set(
+                X_train, y_train, class_labels_train,
+                max_augmentations=self.n_augmentations,
+                random_state=self.random_state
+            )
+
+        # Fit KFD on the (augmented) training split only, then transform test.
+        if self.use_kfd:
+            print(f"Applying KFD transformation (kernel={self.kfd_kernel}, components={self.kfd_components})")
+            kfd = KernelFisherDiscriminant(
+                n_components=self.kfd_components,
+                kernel=self.kfd_kernel,
+                gamma=self.kfd_gamma
+            )
+            X_train = kfd.fit_transform(X_train, y_train)
+            X_test = kfd.transform(X_test)
+            self.kfd_transformer = kfd
+            print(f"KFD transformation applied: -> {X_train.shape[1]} features")
+
+        # Fit the scaler on the training split only, then transform test.
+        X_train = self.scaler.fit_transform(X_train)
+        X_test = self.scaler.transform(X_test)
+
         # Convert targets to one-hot encoding
         y_train_categorical = to_categorical(y_train, num_classes=self.num_classes)
         y_test_categorical = to_categorical(y_test, num_classes=self.num_classes)
-        
+
         # Create model
         input_shape = X_train.shape[1]
         self.model = self._create_model(input_shape, self.num_classes)
-        
+
         # Print model summary
         self.model.summary()
-        
+
         # Get callbacks
         callbacks = self._get_callbacks()
-        
+
         # Compute class weights if enabled
         class_weights = None
         if self.class_weight_balanced:
             class_weights = self._compute_class_weights(y_train)
             print("Using class weights:", class_weights)
-        
+
         # Train the model
         start_time = time.time()
         history = self.model.fit(
@@ -259,31 +308,32 @@ class TFEMGUserIdentifier:
             verbose=1
         )
         training_time = time.time() - start_time
-        
-        # Evaluate the model
+
+        # Evaluate on the untouched, non-augmented test split.
         y_pred_proba = self.model.predict(X_test)
         y_pred = np.argmax(y_pred_proba, axis=1)
-        
+
         # Calculate accuracy using the transformed labels
         accuracy = accuracy_score(y_test, y_pred)
-        
+
         print(f"Training completed in {training_time:.2f} seconds")
         print(f"Test accuracy: {accuracy:.4f}")
-        
+
         # Generate classification report
         report = classification_report(y_test, y_pred, output_dict=True)
-        
+
         # Generate confusion matrix
         self.conf_matrix = confusion_matrix(y_test, y_pred)
-        
-        # Store test data for later visualization
+
+        # Store test data (already KFD/scaler-transformed) for later evaluation/visualization
         self.X_test = X_test
         self.y_test = y_test
         self.y_pred = y_pred
-        
+        self.class_labels_test = class_labels_test
+
         # Save training history for plotting
         self.history = history.history
-        
+
         # Return results
         results = {
             'accuracy': accuracy,
@@ -291,147 +341,97 @@ class TFEMGUserIdentifier:
             'classification_report': report,
             'history': history.history
         }
-        
+
         return results
     
-    def evaluate_with_gestures(self, features: np.ndarray, 
-                              class_labels: np.ndarray) -> Dict[int, Dict[str, float]]:
+    def evaluate_with_gestures(self) -> Dict[int, Dict[str, float]]:
         """
-        Evaluate model performance for each gesture type
-        
-        Args:
-            features: Feature matrix with shape (n_samples, n_features + 1)
-            class_labels: Array of gesture class labels
-            
+        Evaluate model performance for each gesture type, using the exact
+        test split produced by train() (no re-splitting, so this can never
+        drift from the split the reported test accuracy was computed on).
+
         Returns:
             dict: Performance metrics by gesture
         """
+        if self.model is None or not hasattr(self, 'X_test'):
+            raise RuntimeError("Model must be trained via train() before calling evaluate_with_gestures()")
+
+        if self.class_labels_test is None:
+            print("No gesture class labels available for this run; skipping per-gesture evaluation")
+            return {}
+
         print("\nEvaluating model performance by gesture type...")
-        
-        # Extract features and target
-        X = features[:, :-1]
-        y = features[:, -1]
-        
-        # Scale features
-        X = self.scaler.transform(X)
-        
-        # Convert user IDs to integers
-        y = y.astype(int)
-        
-        # If ID mapping isn't already created, create it
-        if not hasattr(self, 'id_mapping'):
-            unique_ids = np.unique(y)
-            self.id_mapping = {original_id: idx for idx, original_id in enumerate(unique_ids)}
-            self.reverse_mapping = {idx: original_id for original_id, idx in self.id_mapping.items()}
-        
-        # Transform the IDs to 0-indexed for keras
-        y_transformed = np.array([self.id_mapping[id_val] for id_val in y])
-        
-        # Split data into training and testing sets
-        X_train, X_test, y_train, y_test, _, class_labels_test = train_test_split(
-            X, y_transformed, class_labels, test_size=0.2, random_state=self.random_state, stratify=y_transformed
-        )
-        
-        # Train the model if not already trained
-        if self.model is None:
-            # Determine number of classes
-            self.num_classes = len(np.unique(y_transformed))
-            
-            # Convert targets to one-hot encoding
-            y_train_categorical = to_categorical(y_train, num_classes=self.num_classes)
-            
-            # Create model
-            input_shape = X_train.shape[1]
-            self.model = self._create_model(input_shape, self.num_classes)
-            
-            # Define callbacks
-            callbacks = []
-            if self.early_stopping:
-                early_stop = EarlyStopping(
-                    monitor='val_loss',
-                    patience=self.patience,
-                    restore_best_weights=True,
-                    verbose=1
-                )
-                callbacks.append(early_stop)
-            
-            # Train the model
-            self.model.fit(
-                X_train, y_train_categorical,
-                epochs=self.epochs,
-                batch_size=self.batch_size,
-                validation_split=0.1,
-                callbacks=callbacks,
-                verbose=1
-            )
-            
-            self.X_test = X_test
-            self.y_test = y_test
-            y_pred_proba = self.model.predict(X_test)
-            self.y_pred = np.argmax(y_pred_proba, axis=1)
-        
-        # Get unique gesture classes
-        unique_classes = np.unique(class_labels_test)
-        
-        # Evaluate for each gesture
+
         gesture_performance = {}
-        for gesture in unique_classes:
-            # Get samples for this gesture
-            gesture_mask = (class_labels_test == gesture)
-            X_gesture = X_test[gesture_mask]
-            y_gesture = y_test[gesture_mask]
-            
+        for gesture in np.unique(self.class_labels_test):
+            gesture_mask = (self.class_labels_test == gesture)
+            X_gesture = self.X_test[gesture_mask]
+            y_gesture = self.y_test[gesture_mask]
+
             if len(X_gesture) == 0:
                 continue
-            
-            # Make predictions
+
             y_pred_proba = self.model.predict(X_gesture)
             y_pred_gesture = np.argmax(y_pred_proba, axis=1)
-            
-            # Calculate accuracy
             accuracy = accuracy_score(y_gesture, y_pred_gesture)
-            
-            # Store results
+
             gesture_performance[int(gesture)] = {
                 'accuracy': accuracy,
                 'samples': len(X_gesture)
             }
-            
+
             print(f"Gesture {int(gesture)}: Accuracy = {accuracy:.4f} ({len(X_gesture)} samples)")
-        
+
         return gesture_performance
     
     def save_model(self, filepath: str) -> None:
-        """Save the trained model to a file"""
+        """Save the trained model, scaler, KFD transformer (if used), and the
+        user-ID <-> class-index mapping needed to make predict() work after a
+        fresh load."""
         if self.model is None:
             print("Model needs to be trained before saving")
             return
-            
+
         Path(filepath).parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save the TensorFlow model
-        tf_path = str(Path(filepath).with_suffix(''))  # Remove extension for TF format
+
+        # Save the TensorFlow model in the native Keras format
+        tf_path = str(Path(filepath).with_suffix('.keras'))
         self.model.save(tf_path)
-        
-        # Save the scaler separately
+
         import joblib
         scaler_path = str(Path(filepath).with_suffix('.scaler'))
         joblib.dump(self.scaler, scaler_path)
-        
+
+        if self.use_kfd and hasattr(self, 'kfd_transformer'):
+            kfd_path = str(Path(filepath).with_suffix('.kfd'))
+            joblib.dump(self.kfd_transformer, kfd_path)
+            print(f"KFD transformer saved to {kfd_path}")
+
+        mapping_path = str(Path(filepath).with_suffix('.idmap'))
+        joblib.dump({'id_mapping': self.id_mapping, 'reverse_mapping': self.reverse_mapping}, mapping_path)
+
         print(f"Model saved to {tf_path}")
         print(f"Scaler saved to {scaler_path}")
-    
+
     def load_model(self, filepath: str) -> None:
-        """Load a trained model from a file"""
-        # Load the TensorFlow model
-        tf_path = str(Path(filepath).with_suffix(''))  # Remove extension for TF format
+        """Load a trained model, scaler, KFD transformer (if present), and ID mapping."""
+        tf_path = str(Path(filepath).with_suffix('.keras'))
         self.model = tf.keras.models.load_model(tf_path)
-        
-        # Load the scaler
+
         import joblib
         scaler_path = str(Path(filepath).with_suffix('.scaler'))
         self.scaler = joblib.load(scaler_path)
-        
+
+        kfd_path = str(Path(filepath).with_suffix('.kfd'))
+        if os.path.exists(kfd_path):
+            self.kfd_transformer = joblib.load(kfd_path)
+
+        mapping_path = str(Path(filepath).with_suffix('.idmap'))
+        mappings = joblib.load(mapping_path)
+        self.id_mapping = mappings['id_mapping']
+        self.reverse_mapping = mappings['reverse_mapping']
+        self.num_classes = len(self.id_mapping)
+
         print(f"Model loaded from {tf_path}")
         print(f"Scaler loaded from {scaler_path}")
     
@@ -719,22 +719,27 @@ class TFEMGUserIdentifier:
     
     def predict(self, X: np.ndarray) -> np.ndarray:
         """
-        Make predictions using the trained model
-        
+        Make predictions using the trained model.
+
+        X should be raw (RSS) features - KFD (if enabled) and scaling are
+        applied here, in the same order used during training.
+
         Args:
             X: Feature matrix with shape (n_samples, n_features)
-            
+
         Returns:
-            np.ndarray: Predicted user IDs
+            np.ndarray: Predicted user IDs (mapped back from the internal
+            0-indexed class labels to the original biometric IDs)
         """
         if self.model is None:
             raise ValueError("Model needs to be trained before making predictions")
-        
-        # Scale the features
+
+        if self.use_kfd and hasattr(self, 'kfd_transformer'):
+            X = self.kfd_transformer.transform(X)
+
         X_scaled = self.scaler.transform(X)
-        
-        # Generate predictions
+
         y_pred_proba = self.model.predict(X_scaled)
-        y_pred = np.argmax(y_pred_proba, axis=1)
-        
-        return y_pred 
+        y_pred_idx = np.argmax(y_pred_proba, axis=1)
+
+        return np.array([self.reverse_mapping[idx] for idx in y_pred_idx])

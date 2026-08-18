@@ -4,19 +4,20 @@ import seaborn as sns
 import numpy as np
 from scipy import stats
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
+from itertools import combinations
 import os
 
 # Create output directory if it doesn't exist
-output_dir = 'experiment_results_two'
+output_dir = 'experiment_results'
 if not os.path.exists(output_dir):
     os.makedirs(output_dir)
 
 # Load result files
 print("Loading result files...")
-df_5users = pd.read_csv('experiments/fyp_best-5users-10runs-rand/results.csv')
-df_10users = pd.read_csv('experiments/fyp_best-10users-10runs-rand/results.csv')
-df_15users = pd.read_csv('experiments/fyp_best-15users-10runs-rand/results.csv')
-df_20users = pd.read_csv('experiments/fyp_best-20users-10runs-rand/results.csv')
+df_5users = pd.read_csv('experiments/5users-10runs-rand/results.csv')
+df_10users = pd.read_csv('experiments/10users-10runs-rand/results.csv')
+df_15users = pd.read_csv('experiments/15users-10runs-rand/results.csv')
+df_20users = pd.read_csv('experiments/20users-10runs-rand/results.csv')
 
 print(f"Data loaded successfully. Found {len(df_5users)} runs for 5 users, {len(df_10users)} runs for 10 users, " 
       f"{len(df_15users)} runs for 15 users, and {len(df_20users)} runs for 20 users.")
@@ -81,8 +82,11 @@ for users in user_counts:
 
 plt.xticks(range(len(user_counts)), xlabels)
 
-# Adjust y-axis limits to focus on the relevant range
-plt.ylim(0.83, 1.01)
+# Adjust y-axis limits to focus on the relevant range (data-driven, not a
+# hardcoded band - accuracy varies a lot with the pipeline/config in use)
+acc_min, acc_max = combined_df['accuracy'].min(), combined_df['accuracy'].max()
+acc_pad = max(0.02, (acc_max - acc_min) * 0.1)
+plt.ylim(max(0.0, acc_min - acc_pad), min(1.0, acc_max + acc_pad))
 
 plt.tight_layout()
 plt.savefig(f'{output_dir}/accuracy_vs_users.png', dpi=300)
@@ -93,21 +97,24 @@ print(f"Saved to {output_dir}/accuracy_vs_users.png")
 print("\nGenerating gesture-specific accuracy comparison...")
 plt.figure(figsize=(14, 8))
 
-# Replace generic gesture names with actual gesture names, excluding gesture 1
-gesture_names = [
-    "Hand Clenched", 
-    "Wrist Flexion",
-    "Wrist Extension",
-    "Radial Deviations",
-    "Ulnar Deviations",
-    "Extended Palm"
-]
+# NOTE: gesture_names/gesture_cols were already computed above from whatever
+# gesture_*_accuracy columns are actually present in the data (line ~45-46).
+# Do NOT overwrite gesture_names with a hardcoded list here - a previous
+# version hardcoded 6 specific gesture labels while the UCI dataset actually
+# has 8 gesture classes (0-7), which silently desynced the labels from
+# gesture_cols and crashed the bar chart below with a shape mismatch.
 
 # Extract means for each gesture, handling potential NaN values
 means_5 = [df_5users[col].dropna().mean() if not df_5users[col].dropna().empty else 0 for col in gesture_cols]
 means_10 = [df_10users[col].dropna().mean() if not df_10users[col].dropna().empty else 0 for col in gesture_cols]
 means_15 = [df_15users[col].dropna().mean() if not df_15users[col].dropna().empty else 0 for col in gesture_cols]
 means_20 = [df_20users[col].dropna().mean() if not df_20users[col].dropna().empty else 0 for col in gesture_cols]
+
+# Shared, data-driven y-range for the gesture-accuracy charts below (bar,
+# line, heatmap, radar) rather than a hardcoded band tuned to one pipeline run
+all_gesture_means = means_5 + means_10 + means_15 + means_20
+gesture_acc_min = max(0.0, min(all_gesture_means) - 0.05)
+gesture_acc_max = min(1.0, max(all_gesture_means) + 0.05)
 
 # Set width of bars
 barWidth = 0.2
@@ -134,7 +141,7 @@ plt.legend()
 
 # Add grid for better readability
 plt.grid(axis='y', alpha=0.3)
-plt.ylim(0.5, 1.0)  # Focus on the relevant accuracy range
+plt.ylim(gesture_acc_min, gesture_acc_max)
 
 plt.tight_layout()
 plt.savefig(f'{output_dir}/gesture_accuracy_comparison.png', dpi=300)
@@ -161,12 +168,12 @@ plt.xlabel('Number of Users', fontsize=12)
 plt.ylabel('Average Accuracy', fontsize=12)
 plt.title('Gesture-Specific Accuracy Trends Across User Counts', fontsize=14)
 plt.xticks(user_counts)
-plt.legend(loc='lower left', bbox_to_anchor=(0.0, 1.02, 1.0, 0.102), 
+plt.legend(loc='lower left', bbox_to_anchor=(0.0, 1.02, 1.0, 0.102),
            mode="expand", ncol=3, fontsize=10)
 
 # Add grid for better readability
 plt.grid(alpha=0.3)
-plt.ylim(0.5, 1.0)  # Focus on the relevant accuracy range
+plt.ylim(gesture_acc_min, gesture_acc_max)
 
 plt.tight_layout()
 plt.savefig(f'{output_dir}/gesture_accuracy_lineplot.png', dpi=300)
@@ -188,7 +195,7 @@ for i, gesture in enumerate(gesture_names):
 # Create heatmap with a blue color palette (lighter to darker)
 ax = sns.heatmap(heatmap_data, annot=True, fmt='.3f', cmap='Blues',
             xticklabels=user_counts, yticklabels=gesture_names,
-            vmin=0.5, vmax=1.0, cbar_kws={'label': 'Accuracy'})
+            vmin=gesture_acc_min, vmax=gesture_acc_max, cbar_kws={'label': 'Accuracy'})
 
 # Customize heatmap
 plt.title('Gesture-Specific Accuracy Across User Counts', fontsize=14)
@@ -236,13 +243,14 @@ ax.plot(angles, radar_means_20, 'o-', linewidth=2.5, label='20 Users', color=col
 labels = gesture_names + [gesture_names[0]]  # Create the labels list but won't display them
 plt.xticks(angles, [''] * len(labels), size=11)
 
-# Set chart properties
-ax.set_ylim(0.7, 1.0)  # Focus on the relevant accuracy range
+# Set chart properties (data-driven range, see gesture_acc_min/max above)
+ax.set_ylim(gesture_acc_min, gesture_acc_max)
 ax.grid(True, alpha=0.3)
 
 # Draw y-axis ticks and labels
-ax.set_yticks([0.75, 0.8, 0.85, 0.9, 0.95, 1.0])
-ax.set_yticklabels(['0.75', '0.8', '0.85', '0.9', '0.95', '1.0'], fontsize=9)
+radar_yticks = np.linspace(gesture_acc_min, gesture_acc_max, 6)
+ax.set_yticks(radar_yticks)
+ax.set_yticklabels([f'{t:.2f}' for t in radar_yticks], fontsize=9)
 
 # Add legend with a better position
 plt.legend(loc='upper center', bbox_to_anchor=(0.5, -0.05), ncol=4, frameon=True, fontsize=10)
@@ -303,7 +311,8 @@ plt.title('Accuracy-Time Trade-off with Increasing User Count', fontsize=14)
 plt.xlabel('Average Training Time (seconds)', fontsize=12)
 plt.ylabel('Average Identification Accuracy', fontsize=12)
 plt.grid(alpha=0.3)
-plt.ylim(0.85, 1.0)  # Focus on the relevant accuracy range
+tradeoff_pad = max(0.02, (max(acc_means) - min(acc_means)) * 0.2)
+plt.ylim(max(0.0, min(acc_means) - tradeoff_pad), min(1.0, max(acc_means) + tradeoff_pad))
 
 plt.tight_layout()
 plt.savefig(f'{output_dir}/accuracy_time_tradeoff.png', dpi=300)
@@ -339,8 +348,12 @@ if p_val < 0.05:
     # Create visualization of Tukey results
     plt.figure(figsize=(10, 6))
     
-    # Get the pairs, mean differences, and p-values directly from tukey results
-    group_pairs = [f"{pair[0]}-{pair[1]}" for pair in tukey._multicomp.pairindices]
+    # Get the pairs and mean differences from tukey results. meandiffs is
+    # ordered by itertools.combinations over groupsunique (statsmodels' public,
+    # documented attribute) - NOT via the private _multicomp.pairindices
+    # attribute, whose shape has changed across statsmodels versions and
+    # silently stopped matching meandiffs' length.
+    group_pairs = [f"{g1}-{g2}" for g1, g2 in combinations(tukey.groupsunique, 2)]
     mean_diffs = tukey.meandiffs
     
     # Create bar chart of mean differences

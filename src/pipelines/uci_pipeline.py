@@ -4,7 +4,6 @@ import pandas as pd
 import numpy as np
 import time
 import os
-from sklearn.model_selection import cross_val_score, KFold
 
 from src.data.uci_loader import UCIDataLoader
 from src.features.uci_extractor import UCIFeatureExtractor
@@ -145,8 +144,8 @@ class UCIPipeline:
         print(f"  Range: {int(np.min(biometric_ids))} to {int(np.max(biometric_ids))}")
         
         # Save outputs if requested
-        #if save_output:
-        #    self._save_outputs(preprocessed_data, segmented_data, features, class_labels, user_ids)
+        if save_output:
+            self._save_outputs(preprocessed_data, segmented_data, features, class_labels, user_ids)
         
         # Train model if requested
         model_results = None
@@ -157,46 +156,21 @@ class UCIPipeline:
             
             # Create model based on configuration
             model = self._get_model()
-            
+
             # Get training parameters from config
             test_size = self.config.get('training', {}).get('test_size', 0.2)
-            
-            # Extract features and target
-            X = features[:, :-1]  # All columns except the last
-            y = features[:, -1]   # Last column is the target (user ID)
-            
-            # Perform cross-validation based on model type
             model_type = self.config.get('model', {}).get('model_type', 'sklearn')
-            cv_results = None
-            
-            # Check if cross-validation is enabled
-            perform_cv = self.config.get('training', {}).get('perform_cv', True)
-            
-            if model_type.lower() == 'sklearn' and perform_cv:
-                print("\nPerforming 5-fold cross-validation...")
-                cv = KFold(n_splits=5, shuffle=True, random_state=42)
-                cv_scores = cross_val_score(model.model, X, y, cv=cv)
-                print(f"Cross-validation accuracy: {cv_scores.mean():.4f} ± {cv_scores.std():.4f}")
-                print(f"Individual fold scores: {cv_scores}")
-                cv_results = {
-                    'cv_scores': cv_scores,
-                    'cv_mean': cv_scores.mean(),
-                    'cv_std': cv_scores.std()
-                }
-            elif not perform_cv:
-                print("Cross-validation disabled, skipping...")
-            
-            # Train model on full dataset
-            model_results = model.train(features, test_size=test_size)
-            
-            # Add cross-validation results to model_results if available
-            if cv_results:
-                for key, value in cv_results.items():
-                    model_results[key] = value
-            
-            # Evaluate by gesture if class labels are available
+
+            # Train (and, for sklearn, cross-validate) the model. Splitting,
+            # cross-validation, augmentation, and KFD fitting all happen
+            # inside model.train() in the order needed to avoid leaking test
+            # data into training - see EMGUserIdentifier.train()/
+            # TFEMGUserIdentifier.train() for details.
+            model_results = model.train(features, class_labels=class_labels, test_size=test_size)
+
+            # Evaluate by gesture, reusing the exact test split from train()
             if class_labels is not None:
-                gesture_results = model.evaluate_with_gestures(features, class_labels)
+                gesture_results = model.evaluate_with_gestures()
                 model_results['gesture_performance'] = gesture_results
             
             # Save model and results if experiment name is provided

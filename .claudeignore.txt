@@ -1,0 +1,7 @@
+data/
+*.csv
+experiments/
+*.png
+*.pkl
+*.h5
+venv/

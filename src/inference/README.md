@@ -1,4 +1,6 @@
-# EMG-Based Real-Time User Identification
+# EMG-Based Real-Time User Identification (Proof of Concept)
+
+**Status: proof-of-concept, not a maintained feature.** This module simulates a streaming context on top of the main training pipeline; it hasn't been kept in sync with it and has a known gap: `RealTimeEMGIdentifier` extracts raw (non-KFD-transformed) features, so it will error out against a model trained with the default `use_kfd: true`. Train with `--no-kfd` if you want to exercise this code path - see `src/features/uci_extractor.py::extract_features_from_segment` for details. The main pipeline (`run_pipeline.py`) does not depend on anything in this directory.
 
 This module provides tools for real-time user identification using EMG signals. It extends the existing EMG user identification system to work in a streaming context, allowing for continuous user identification with configurable parameters.
 

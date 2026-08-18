@@ -71,30 +71,6 @@ class BaseFeatureExtractor(ABC):
         if np.any(np.isnan(data)) or np.any(np.isinf(data)):
             raise ValueError("Signal contains NaN or Inf values")
     
-    # def _calculate_mav(self, data: np.ndarray) -> float:
-    #     """Calculate Mean Absolute Value"""
-    #     return np.mean(np.abs(data))
-    
-    # def _calculate_rms(self, data: np.ndarray) -> float:
-    #     """Calculate Root Mean Square"""
-    #     return np.sqrt(np.mean(np.square(data)))
-    
-    # def _calculate_variance(self, data: np.ndarray) -> float:
-    #     """Calculate Variance"""
-    #     return np.var(data)
-    
-    # def _calculate_log_rms(self, data: np.ndarray) -> float:
-    #     """Calculate Log of RMS"""
-    #     return np.log(self._calculate_rms(data))
-    
-    # def _calculate_kurtosis(self, data: np.ndarray) -> float:
-    #     """Calculate Kurtosis"""
-    #     return stats.kurtosis(data, fisher=False)
-    
-    # def _calculate_skewness(self, data: np.ndarray) -> float:
-    #     """Calculate Skewness"""
-    #     return stats.skew(data)
-    
     def _extract_channel_features(self, channel_data: np.ndarray) -> float:
         """Extract features from a single channel
         

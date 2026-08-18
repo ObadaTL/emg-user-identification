@@ -150,27 +150,27 @@ def main():
         pipeline.config['feature_extraction']['kfd_components'] = args.kfd_components
         pipeline.feature_extractor.kfd_components = args.kfd_components
         
-        # Augmentation settings
+        # Augmentation settings. NOTE: augmentation is applied inside model
+        # training (train-split only), not by the feature extractor, so only
+        # the config dict needs updating here - the model reads it directly.
         pipeline.config['feature_extraction']['apply_augmentation'] = not args.no_augment
-        pipeline.feature_extractor.apply_augmentation = not args.no_augment
         pipeline.config['feature_extraction']['n_augmentations'] = args.n_augmentations
-        pipeline.feature_extractor.n_augmentations = args.n_augmentations
-        
+
         # Update selected gestures if provided
         if args.selected_gestures:
             pipeline.config['feature_extraction']['selected_gestures'] = args.selected_gestures
             pipeline.feature_extractor.selected_gestures = args.selected_gestures
-        
+
         # Cross-validation settings
         pipeline.config['training']['perform_cv'] = not args.no_cv
-        
+
         # Display updated feature extraction configuration
+        feature_config = pipeline.config['feature_extraction']
         print("\nFinal Feature Extraction Configuration:")
         print(f"  Apply normalization: {pipeline.feature_extractor.apply_normalization}")
-        print(f"  Use enhanced features: {pipeline.feature_extractor.use_enhanced_features}")
-        print(f"  Apply data augmentation: {pipeline.feature_extractor.apply_augmentation}")
-        if pipeline.feature_extractor.apply_augmentation:
-            print(f"  Number of augmentations per sample: {pipeline.feature_extractor.n_augmentations}")
+        print(f"  Apply data augmentation (training split only): {feature_config['apply_augmentation']}")
+        if feature_config['apply_augmentation']:
+            print(f"  Number of augmentations per sample: {feature_config['n_augmentations']}")
         print(f"  KFD enabled: {pipeline.feature_extractor.use_kfd}")
         if pipeline.feature_extractor.use_kfd:
             print(f"  KFD kernel: {pipeline.feature_extractor.kfd_kernel}")
